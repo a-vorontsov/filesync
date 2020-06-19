@@ -88,13 +88,26 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
-    async_std::fs::create_dir_all(&CFG.save_dir).await?;
-
     let args = cli::CliParams::from_args();
 
-    let ip = format!("0.0.0.0:{}", &args.port);
+    let save_dir = match &args.save_dir {
+        Some(x) => x.to_str().unwrap(),
+        None => &CFG.save_dir,
+    };
 
-    println!("Starting filesync server on {}", ip);
+    let save_dir_full_path = fs::canonicalize(PathBuf::from(save_dir)).unwrap();
+
+    let port = match &args.port {
+        Some(x) => x,
+        None => &CFG.port,
+    };
+
+    async_std::fs::create_dir_all(&save_dir_full_path).await?;
+
+    let ip = format!("0.0.0.0:{}", port);
+
+    println!("Starting filesync server on:\n\t{}", ip);
+    println!("Save directory configured as:\n\t{:?}", &save_dir_full_path);
 
     HttpServer::new(|| {
         App::new()

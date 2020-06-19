@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate lazy_static;
+
 mod cli;
 
 use actix_multipart::Multipart;
@@ -5,10 +8,30 @@ use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServ
 use async_std::prelude::*;
 use filesync_core::*;
 use futures::{StreamExt, TryStreamExt};
+use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use structopt::StructOpt;
+
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    pub save_dir: String,
+    pub port: i32,
+}
+
+impl ::std::default::Default for Config {
+    fn default() -> Self {
+        Self {
+            save_dir: "filesync".to_string(),
+            port: 8000,
+        }
+    }
+}
+
+lazy_static! {
+    static ref CFG: Config = confy::load("filesync-server").unwrap();
+}
 
 // fn test() {
 //     let args = cli::CliParams::from_args();
@@ -37,13 +60,19 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
         let filename = content_type
             .get_filename()
             .ok_or_else(|| actix_web::error::ParseError::Incomplete)?;
-        let filepath = format!("./tmp/{}", sanitize_filename::sanitize(&filename));
-        let mut f = async_std::fs::File::create(filepath).await?;
+        let filepath = format!(
+            "{}/{}",
+            CFG.save_dir,
+            sanitize_filename::sanitize(&filename)
+        );
+        let mut f = web::block(|| std::fs::File::create(filepath))
+            .await
+            .unwrap();
 
         // Field in turn is stream of *Bytes* object
         while let Some(chunk) = field.next().await {
             let data = chunk.unwrap();
-            f.write_all(&data).await?;
+            f = web::block(move || f.write_all(&data).map(|_| f)).await?;
         }
     }
     Ok(HttpResponse::Ok().into())
@@ -59,18 +88,23 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
-    async_std::fs::create_dir_all("./tmp").await?;
+    async_std::fs::create_dir_all(&CFG.save_dir).await?;
 
     let args = cli::CliParams::from_args();
 
     let ip = format!("0.0.0.0:{}", &args.port);
 
+    println!("Starting filesync server on {}", ip);
+
     HttpServer::new(|| {
-        App::new().wrap(middleware::Logger::default()).service(
-            web::resource("/")
-                .route(web::get().to(greet))
-                .route(web::post().to(save_file)),
-        )
+        App::new()
+            .wrap(middleware::Logger::default())
+            .wrap(middleware::Compress::default())
+            .service(
+                web::resource("/")
+                    .route(web::get().to(greet))
+                    .route(web::post().to(save_file)),
+            )
     })
     .bind(ip)?
     .run()

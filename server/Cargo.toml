@@ -9,7 +9,8 @@ edition = "2018"
 [dependencies]
 structopt = "0.3.14"
 filesync-core = { path = "../core" }
-actix-web = "2"
+openssl = { version = "0.10", features = ["v110"] }
+actix-web = { version = "2.0.0", features = ["rustls", "openssl"] }
 actix-rt = "1"
 futures = "0.3.1"
 actix-multipart = "0.2.0"

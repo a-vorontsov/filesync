@@ -48,7 +48,7 @@ async fn main() -> Result<(), reqwest::Error> {
         let form = blocking::multipart::Form::new().part("file", part);
 
         let response = client
-            .post("https://filesync.vorontsov.co.uk:8000")
+            .post("http://localhost:8000")
             .multipart(form)
             .send()
             .unwrap();

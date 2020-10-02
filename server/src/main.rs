@@ -1,20 +1,30 @@
 #[macro_use]
 extern crate lazy_static;
+#[macro_use]
+extern crate diesel;
 
 mod cli;
+mod db;
+mod models;
+mod schema;
 
 use actix_multipart::Multipart;
 use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer, Responder};
 use async_std::prelude::*;
+use cli::*;
+use db::*;
+use diesel::prelude::*;
+use diesel::r2d2::{self, ConnectionManager};
 use filesync_core::*;
 use futures::{StreamExt, TryStreamExt};
-use openssl::ssl::{SslAcceptor, SslAcceptorBuilder, SslFiletype, SslMethod};
 use serde_derive::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::str;
 use structopt::StructOpt;
+
+type DbPool = r2d2::Pool<ConnectionManager<SqliteConnection>>;
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
@@ -25,7 +35,7 @@ pub struct Config {
 impl ::std::default::Default for Config {
     fn default() -> Self {
         Self {
-            save_dir: "filesync/test".to_string(),
+            save_dir: "filesync".to_string(),
             port: 8000,
         }
     }
@@ -33,21 +43,6 @@ impl ::std::default::Default for Config {
 
 lazy_static! {
     static ref CFG: Config = confy::load("filesync-server").unwrap();
-}
-
-fn generate_ssl_config() -> SslAcceptorBuilder {
-    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
-    builder
-        .set_private_key_file(
-            "cert/filesync-key.pem",
-            SslFiletype::PEM,
-        )
-        .unwrap();
-    builder
-        .set_certificate_chain_file("cert/filesync.pem")
-        .unwrap();
-
-    builder
 }
 
 // fn test() {
@@ -68,7 +63,7 @@ fn generate_ssl_config() -> SslAcceptorBuilder {
 //     write_file(&args.output, decompressed_bytes);
 // }
 
-async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
+async fn save_file(_pool: web::Data<DbPool>, mut payload: Multipart) -> Result<HttpResponse, Error> {
     while let Ok(Some(mut field)) = payload.try_next().await {
         let content_type = field
             .content_disposition()
@@ -91,6 +86,7 @@ async fn save_file(mut payload: Multipart) -> Result<HttpResponse, Error> {
             f = web::block(move || f.write_all(&data).map(|_| f)).await?;
         }
     }
+
     Ok(HttpResponse::Ok().into())
 }
 
@@ -104,7 +100,13 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
-    let args = cli::CliParams::from_args();
+    let manager = ConnectionManager::<SqliteConnection>::new("filesync.db");
+    let pool = r2d2::Pool::builder()
+        .max_size(32)
+        .build(manager)
+        .expect("Failed to create pool.");
+
+    let args = CliParams::from_args();
 
     let save_dir = match &args.save_dir {
         Some(x) => x.to_str().unwrap(),
@@ -121,13 +123,12 @@ async fn main() -> std::io::Result<()> {
 
     let ip = format!("0.0.0.0:{}", port);
 
-    let ssl_config = generate_ssl_config();
-
     println!("Starting filesync server on:\n\t{}", ip);
     println!("Save directory configured as:\n\t{:?}", &save_dir_full_path);
 
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         App::new()
+            .data(pool.clone())
             .wrap(middleware::Logger::default())
             .wrap(middleware::Compress::default())
             .service(
@@ -136,7 +137,7 @@ async fn main() -> std::io::Result<()> {
                     .route(web::post().to(save_file)),
             )
     })
-    .bind_openssl(ip, ssl_config)?
+    .bind(ip)?
     .run()
     .await
 }
